@@ -13,25 +13,19 @@ require("dotenv").config();
 app.use(cors());
 app.use(bodyParser.json());
 
-// ✅ Initialize Firebase Admin SDK with Environment Variable Support
+// ✅ Initialize Firebase Admin SDK
 try {
   let serviceAccount;
   
-  // Check if environment variable exists (for production/deployment)
   if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
     console.log('📦 Loading Firebase credentials from environment variable');
-    
-    // Decode base64 string
     const decoded = Buffer.from(
       process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 
       'base64'
     ).toString('utf-8');
-    
     serviceAccount = JSON.parse(decoded);
     console.log('✅ Firebase credentials decoded successfully');
-    
   } else {
-    // Fallback to local file (for development)
     console.log('📁 Loading Firebase credentials from local file');
     serviceAccount = require('./serviceAccountKey.json');
   }
@@ -45,7 +39,6 @@ try {
   
 } catch (error) {
   console.error('❌ Error initializing Firebase Admin:', error.message);
-  console.error('Make sure serviceAccountKey.json exists or FIREBASE_SERVICE_ACCOUNT_BASE64 is set');
 }
 
 // MongoDB Connection
@@ -54,11 +47,11 @@ mongoose.connect(process.env.MONGO_URI)
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
 // --------------------------
-// Lead Schema & Model
+// Schemas
 // --------------------------
 const leadSchema = new mongoose.Schema({
   id: { type: Number, required: true, unique: true },
-  user_id: Number,
+  user_id: mongoose.Schema.Types.ObjectId,  // ✅ Changed to ObjectId
 
   customer_name: String,
   name: String,
@@ -92,9 +85,6 @@ const leadSchema = new mongoose.Schema({
 
 const Lead = mongoose.model("Lead", leadSchema);
 
-// --------------------------
-// Form Schema & Model
-// --------------------------
 const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true },
@@ -105,9 +95,6 @@ const formSchema = new mongoose.Schema({
 
 const Form = mongoose.model("Form", formSchema);
 
-// --------------------------
-// User Schema & Model
-// --------------------------
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -134,26 +121,51 @@ const User = mongoose.model("User", userSchema);
 // --------------------------
 async function sendFCMNotification(userId, leadData) {
   try {
-    console.log('📱 Attempting to send notification for user:', userId);
+    console.log('');
+    console.log('═══════════════════════════════════');
+    console.log('📱 FCM NOTIFICATION PROCESS START');
+    console.log('═══════════════════════════════════');
+    console.log('1️⃣ Input User ID:', userId);
+    console.log('2️⃣ User ID Type:', typeof userId);
     
-    const user = await User.findById(userId);
-    
-    if (!user || !user.fcm_token) {
-      console.warn('⚠️ No FCM token found for user:', userId);
-      return { success: false, error: 'No FCM token' };
+    if (!userId) {
+      console.error('❌ User ID is null or undefined');
+      return { success: false, error: 'User ID is required' };
     }
     
-    console.log('🔑 User FCM token found');
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.error('❌ Invalid MongoDB ObjectId format:', userId);
+      return { success: false, error: 'Invalid user ID format' };
+    }
+    
+    console.log('3️⃣ Searching for user...');
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      console.error('❌ User not found in database');
+      return { success: false, error: 'User not found' };
+    }
+    
+    console.log('4️⃣ ✅ User found:', user.username);
+    console.log('5️⃣ Checking FCM token...');
+    
+    if (!user.fcm_token) {
+      console.error('❌ User has no FCM token');
+      return { success: false, error: 'No FCM token for this user' };
+    }
+    
+    console.log('6️⃣ ✅ FCM Token exists');
+    console.log('   Preview:', user.fcm_token.substring(0, 30) + '...');
     
     const message = {
       token: user.fcm_token,
       data: {
         type: 'new_lead',
         lead_id: String(leadData.id || leadData._id),
-        lead_name: leadData.name || leadData.customer_name || 'New Lead',
+        lead_name: leadData.name || leadData.lead_name || leadData.customer_name || 'New Lead',
         lead_service: leadData.service || leadData.requirement || 'Service inquiry',
         lead_city: leadData.city || leadData.location || '',
-        lead_mobile: leadData.mobile || leadData.phone || ''
+        lead_mobile: leadData.mobile || leadData.phone || leadData.customer_phone || ''
       },
       android: {
         priority: 'high',
@@ -163,18 +175,30 @@ async function sendFCMNotification(userId, leadData) {
       }
     };
     
-    console.log('📤 Sending FCM message...');
+    console.log('7️⃣ Message prepared:');
+    console.log('   Lead:', message.data.lead_name);
+    console.log('   Service:', message.data.lead_service);
     
+    console.log('8️⃣ Sending FCM message...');
     const response = await admin.messaging().send(message);
     
-    console.log('✅ Notification sent successfully:', response);
+    console.log('9️⃣ ✅ SUCCESS! Notification sent');
+    console.log('   Response:', response);
+    console.log('═══════════════════════════════════');
+    console.log('');
+    
     return { success: true, response };
     
   } catch (error) {
-    console.error('❌ Error sending FCM notification:');
+    console.error('');
+    console.error('═══════════════════════════════════');
+    console.error('❌ FCM ERROR');
+    console.error('═══════════════════════════════════');
     console.error('Code:', error.code);
     console.error('Message:', error.message);
-    return { success: false, error: error.message };
+    console.error('═══════════════════════════════════');
+    console.error('');
+    return { success: false, error: error.message, code: error.code };
   }
 }
 
@@ -188,6 +212,31 @@ app.get("/", (req, res) => {
     firebase: admin.apps.length > 0 ? "✅ Connected" : "❌ Not connected",
     timestamp: new Date().toISOString()
   });
+});
+
+// ✅ DEBUG: List all users
+app.get('/api/debug/users', async (req, res) => {
+  try {
+    const users = await User.find({}, { 
+      username: 1, 
+      _id: 1, 
+      fcm_token: 1,
+      fcm_updated_at: 1
+    });
+    
+    res.json({
+      total: users.length,
+      users: users.map(u => ({
+        id: u._id,
+        username: u.username,
+        has_fcm_token: !!u.fcm_token,
+        fcm_token_preview: u.fcm_token ? u.fcm_token.substring(0, 30) + '...' : null,
+        fcm_updated_at: u.fcm_updated_at
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Save FCM Token
@@ -218,7 +267,7 @@ app.post('/api/save-fcm-token', async (req, res) => {
     user.fcm_updated_at = new Date();
     await user.save();
     
-    console.log('✅ FCM token saved successfully');
+    console.log('✅ FCM token saved successfully for:', user.username);
     
     res.json({
       success: true,
@@ -261,20 +310,50 @@ app.get("/api/form", async (req, res) => {
   }
 });
 
-// Add Lead with FCM Notification
+// ✅ UPDATED: Add Lead with Auto User Assignment
 app.post('/api/addLeadsByUserId', async (req, res) => {
   try {
-    console.log('=== NEW LEAD CREATION ===');
-    console.log('Request body:', req.body);
+    console.log('');
+    console.log('═══════════════════════════════════');
+    console.log('🆕 NEW LEAD CREATION');
+    console.log('═══════════════════════════════════');
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    
+    // ✅ If user_id missing, assign first user with FCM token
+    if (!req.body.user_id) {
+      console.warn('⚠️ user_id missing, searching for user with FCM token...');
+      
+      // Find first user with FCM token
+      const user = await User.findOne({ fcm_token: { $ne: null } }).sort({ fcm_updated_at: -1 });
+      
+      if (user) {
+        req.body.user_id = user._id;
+        console.log('✅ Auto-assigned to user:', user.username);
+        console.log('   User ID:', user._id);
+        console.log('   Has FCM token:', !!user.fcm_token);
+      } else {
+        console.error('❌ No user with FCM token found!');
+        console.log('💡 Available users:');
+        const allUsers = await User.find({}, { username: 1, _id: 1, fcm_token: 1 });
+        allUsers.forEach(u => {
+          console.log(`   - ${u.username} (ID: ${u._id}, Token: ${u.fcm_token ? 'YES' : 'NO'})`);
+        });
+      }
+    } else {
+      console.log('✅ user_id provided:', req.body.user_id);
+    }
     
     const lead = new Lead(req.body);
     await lead.save();
     
-    console.log('✅ Lead saved with ID:', lead.id);
+    console.log('✅ Lead saved successfully');
+    console.log('   Lead ID:', lead.id);
+    console.log('   Assigned to user ID:', lead.user_id);
+    console.log('═══════════════════════════════════');
     
-    // Send FCM notification
+    // Send notification
     if (lead.user_id) {
-      console.log('📢 Sending notification to user:', lead.user_id);
+      console.log('📢 Sending notification...');
       const notificationResult = await sendFCMNotification(lead.user_id, lead);
       
       res.status(201).json({
@@ -285,15 +364,26 @@ app.post('/api/addLeadsByUserId', async (req, res) => {
         notification_info: notificationResult
       });
     } else {
+      console.warn('⚠️ No user assigned, notification not sent');
       res.status(201).json({
         success: true,
-        message: 'Lead added (no user_id for notification)',
-        data: lead
+        message: 'Lead added but no user assigned',
+        data: lead,
+        notification_sent: false,
+        error: 'No user_id available'
       });
     }
     
   } catch (error) {
-    console.error('❌ Error adding lead:', error);
+    console.error('');
+    console.error('═══════════════════════════════════');
+    console.error('❌ ERROR ADDING LEAD');
+    console.error('═══════════════════════════════════');
+    console.error('Message:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('═══════════════════════════════════');
+    console.error('');
+    
     res.status(500).json({
       success: false,
       message: 'Error adding lead',
@@ -458,7 +548,7 @@ app.post('/api/app-login', async (req, res) => {
 // Start Server
 app.listen(PORT, () => {
   console.log(`\n🚀 Server running on port ${PORT}`);
-  console.log(`📱 Firebase Admin SDK: ${admin.apps.length > 0 ? '✅ Initialized' : '❌ Not initialized'}`);
-  console.log(`🔗 API URL: http://localhost:${PORT}`);
+  console.log(`📱 Firebase: ${admin.apps.length > 0 ? '✅ Initialized' : '❌ Not initialized'}`);
+  console.log(`🔗 API: http://localhost:${PORT}`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}\n`);
 });
