@@ -42,8 +42,20 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB error:", err));
 
+// Fix index issue on startup
+mongoose.connection.once('open', async () => {
+  console.log("🔧 Checking for problematic indexes...");
+  try {
+    const Lead = mongoose.model("Lead");
+    await Lead.collection.dropIndex("id_1");
+    console.log("✅ Dropped id_1 index");
+  } catch (error) {
+    console.log("ℹ️ Index id_1 not found (OK)");
+  }
+});
+
 // --------------------------
-// Schemas
+// Schemas - FIXED VERSION
 // --------------------------
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
@@ -62,14 +74,33 @@ userSchema.pre("save", async function (next) {
 
 const User = mongoose.model("User", userSchema);
 
+// ✅ FIXED LEAD SCHEMA - NO 'id' FIELD
 const leadSchema = new mongoose.Schema({
-  user_id: mongoose.Schema.Types.ObjectId,
-  customer_name: String,
-  customer_phone: String,
-  requirement: String,
-  city: String,
-  status: String,
-}, { timestamps: true });
+  user_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  customer_name: { 
+    type: String, 
+    required: true 
+  },
+  customer_phone: { 
+    type: String 
+  },
+  requirement: { 
+    type: String 
+  },
+  city: { 
+    type: String 
+  },
+  status: { 
+    type: String, 
+    default: 'New Lead',
+    enum: ['New Lead', 'Cold', 'Warm', 'Hot', 'Converted']
+  }
+}, { 
+  timestamps: true  // Automatically adds createdAt & updatedAt
+});
 
 const Lead = mongoose.model("Lead", leadSchema);
 
@@ -184,7 +215,7 @@ app.post("/api/app-login", async (req, res) => {
 });
 
 // --------------------------
-// 🔹 Save FCM Token (matches your reference)
+// 🔹 Save FCM Token
 // --------------------------
 app.post("/backend/api/save-fcm-token", async (req, res) => {
   try {
@@ -209,24 +240,38 @@ app.post("/backend/api/save-fcm-token", async (req, res) => {
 });
 
 // --------------------------
-// 🔹 Get Leads by User ID (NEW - ADD THIS)
+// 🔹 Get Leads by User ID (with pagination)
 // --------------------------
 app.post("/api/getLeadsByUserId", async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.body;
+    const { page = 1, limit = 10, user_id } = req.body;
     const skip = (page - 1) * limit;
     
-    const leads = await Lead.find()
-      .sort({ createdAt: -1 })
+    // Optional: Filter by user_id if provided
+    const query = user_id ? { user_id } : {};
+    
+    const leads = await Lead.find(query)
+      .sort({ createdAt: -1 }) // Latest first
       .skip(skip)
       .limit(parseInt(limit));
     
-    const total = await Lead.countDocuments();
+    const total = await Lead.countDocuments(query);
+    
+    // Transform response to match frontend expectations
+    const transformedLeads = leads.map(lead => ({
+      id: lead._id,
+      lead_name: lead.customer_name,
+      phone: lead.customer_phone,
+      requirement: lead.requirement,
+      city: lead.city,
+      status: lead.status,
+      created_at: lead.createdAt
+    }));
     
     res.json({
       status: true,
       message: "Leads fetched successfully",
-      leads: leads,
+      leads: transformedLeads,
       total: total,
       page: parseInt(page),
       totalPages: Math.ceil(total / limit)
@@ -240,32 +285,124 @@ app.post("/api/getLeadsByUserId", async (req, res) => {
     });
   }
 });
+
 // --------------------------
 // 🔹 Add Lead (auto send notification)
 // --------------------------
 app.post("/api/addLeadsByUserId", async (req, res) => {
   try {
-    let { user_id } = req.body;
+    let { user_id, customer_name, customer_phone, requirement, city, status } = req.body;
 
+    // Validate required fields
+    if (!customer_name) {
+      return res.status(400).json({ 
+        status: false, 
+        message: "customer_name is required" 
+      });
+    }
+
+    // If no user_id provided, find the most recent user with FCM token
     if (!user_id) {
       const user = await User.findOne({ fcm_token: { $ne: null } }).sort({ fcm_updated_at: -1 });
       if (user) user_id = user._id;
     }
 
-    const lead = new Lead(req.body);
-    lead.user_id = user_id;
+    // Create new lead
+    const lead = new Lead({
+      user_id: user_id || null,
+      customer_name,
+      customer_phone,
+      requirement,
+      city,
+      status: status || 'New Lead'
+    });
+
     await lead.save();
 
+    console.log("✅ Lead saved:", lead._id);
+
     // Send FCM notification
-    if (user_id) await sendFCMNotification(user_id, lead);
+    if (user_id) {
+      await sendFCMNotification(user_id, lead);
+    }
 
     res.json({
       status: true,
       message: "Lead added successfully",
-      data: lead
+      data: {
+        id: lead._id,
+        customer_name: lead.customer_name,
+        customer_phone: lead.customer_phone,
+        requirement: lead.requirement,
+        city: lead.city,
+        status: lead.status,
+        createdAt: lead.createdAt
+      }
     });
   } catch (err) {
+    console.error("❌ Error adding lead:", err);
     res.status(500).json({ status: false, message: err.message });
+  }
+});
+
+// --------------------------
+// 🔹 Get Today's Leads (Date filter)
+// --------------------------
+app.post("/api/getTodaysLeads", async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.body;
+    
+    // Get today's date range (IST timezone)
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+    
+    const skip = (page - 1) * limit;
+    
+    const leads = await Lead.find({
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      }
+    })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Lead.countDocuments({
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      }
+    });
+    
+    const transformedLeads = leads.map(lead => ({
+      id: lead._id,
+      lead_name: lead.customer_name,
+      phone: lead.customer_phone,
+      requirement: lead.requirement,
+      city: lead.city,
+      status: lead.status,
+      created_at: lead.createdAt
+    }));
+    
+    res.json({
+      status: true,
+      message: "Today's leads fetched successfully",
+      leads: transformedLeads,
+      total: total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+    
+  } catch (err) {
+    console.error("Error fetching today's leads:", err);
+    res.status(500).json({ 
+      status: false, 
+      message: err.message 
+    });
   }
 });
 
