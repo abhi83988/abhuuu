@@ -108,17 +108,30 @@ const Lead = mongoose.model("Lead", leadSchema);
 // Helper: Send FCM Notification
 // --------------------------
 async function sendFCMNotification(userId, leadData) {
+  console.log('🔔 [BACKEND] Attempting to send notification...');
+  console.log('🔔 [BACKEND] UserId:', userId);
+  console.log('🔔 [BACKEND] Lead data:', leadData);
+  
   try {
     const user = await User.findById(userId);
-    if (!user || !user.fcm_token) {
-      console.warn("❌ No FCM token for user");
+    console.log('🔔 [BACKEND] User found:', user ? 'YES' : 'NO');
+    
+    if (!user) {
+      console.warn('❌ [BACKEND] User not found');
+      return { status: false, message: "User not found" };
+    }
+
+    console.log('🔔 [BACKEND] User FCM token:', user.fcm_token ? user.fcm_token.substring(0, 30) + '...' : 'NULL');
+    
+    if (!user.fcm_token) {
+      console.warn('❌ [BACKEND] No FCM token for user');
       return { status: false, message: "No FCM token" };
     }
 
     const message = {
       token: user.fcm_token,
       notification: {
-        title: "New Lead Added",
+        title: "🎉 New Lead Added",
         body: `${leadData.customer_name || "Customer"} - ${leadData.requirement || "Requirement"}`
       },
       data: {
@@ -126,23 +139,36 @@ async function sendFCMNotification(userId, leadData) {
         lead_id: String(leadData._id),
         lead_name: leadData.customer_name || "",
         requirement: leadData.requirement || "",
-        city: leadData.city || ""
+        city: leadData.city || "",
+        phone: leadData.customer_phone || ""
       },
       android: {
         priority: "high",
-        notification: { channelId: "lead_notifications" }
+        notification: { 
+          channelId: "lead_notifications",
+          sound: "default",
+          priority: "high"
+        }
       }
     };
 
+    console.log('🔔 [BACKEND] Sending FCM message...');
+    console.log('🔔 [BACKEND] Message payload:', JSON.stringify(message, null, 2));
+
     const response = await admin.messaging().send(message);
-    console.log("✅ Notification sent:", response);
+    console.log('✅ [BACKEND] Notification sent successfully!');
+    console.log('✅ [BACKEND] Firebase response:', response);
 
     return { status: true, message: "Notification sent", response };
+    
   } catch (error) {
-    console.error("❌ FCM error:", error.message);
+    console.error('❌ [BACKEND] FCM error:', error);
+    console.error('❌ [BACKEND] Error details:', error.message);
+    console.error('❌ [BACKEND] Error code:', error.code);
     return { status: false, message: error.message };
   }
 }
+
 
 // --------------------------
 // Routes
