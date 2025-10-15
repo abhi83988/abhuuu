@@ -209,6 +209,38 @@ app.post("/backend/api/save-fcm-token", async (req, res) => {
 });
 
 // --------------------------
+// 🔹 Get Leads by User ID (NEW - ADD THIS)
+// --------------------------
+app.post("/api/getLeadsByUserId", async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.body;
+    const skip = (page - 1) * limit;
+    
+    const leads = await Lead.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Lead.countDocuments();
+    
+    res.json({
+      status: true,
+      message: "Leads fetched successfully",
+      leads: leads,
+      total: total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit)
+    });
+    
+  } catch (err) {
+    console.error("Error fetching leads:", err);
+    res.status(500).json({ 
+      status: false, 
+      message: err.message 
+    });
+  }
+});
+// --------------------------
 // 🔹 Add Lead (auto send notification)
 // --------------------------
 app.post("/api/addLeadsByUserId", async (req, res) => {
