@@ -1,0 +1,1 @@
+Validation failed SDK version issue. This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps must be built with the iOS 26 SDK or later, included in Xcode 26 or later, in order to be uploaded to App Store Connect or submitted for distribution. (ID: 559128ad-1b52-46ab-b5f8-a73662025b18)
